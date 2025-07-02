@@ -1,4 +1,5 @@
 #!/bin/bash
+
 # 函数：检查错误并退出
 check_error() {
     if [ $? -ne 0 ]; then
@@ -24,7 +25,7 @@ generate_random_password() {
     echo "$random_password"
 }
 
-# 函数：修改 sshd_config 文件
+# 函数：修改 sshd_config 文件，启用 root 密码登录，关闭密钥登录
 modify_sshd_config() {
     sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak.$(date +%F-%H%M%S)
     check_error "备份 sshd_config 文件时出错"
@@ -37,29 +38,30 @@ modify_sshd_config() {
         echo "ChallengeResponseAuthentication no" | sudo tee -a /etc/ssh/sshd_config.d/root-login.conf > /dev/null
         check_error "创建自定义配置文件时出错"
     else
-        declare -A settings=(
-            ["PermitRootLogin"]="yes"
-            ["PasswordAuthentication"]="yes"
-            ["PubkeyAuthentication"]="no"
-            ["ChallengeResponseAuthentication"]="no"
-        )
-        for key in "${!settings[@]}"; do
+        for setting in \
+            "PermitRootLogin yes" \
+            "PasswordAuthentication yes" \
+            "PubkeyAuthentication no" \
+            "ChallengeResponseAuthentication no"; do
+            key=$(echo "$setting" | cut -d' ' -f1)
+            value=$(echo "$setting" | cut -d' ' -f2)
             if grep -q "^$key" /etc/ssh/sshd_config; then
-                sudo sed -i "s/^$key.*/$key ${settings[$key]}/" /etc/ssh/sshd_config
+                sudo sed -i "s/^$key.*/$key $value/" /etc/ssh/sshd_config
+                check_error "修改 $key 时出错"
             else
-                echo "$key ${settings[$key]}" | sudo tee -a /etc/ssh/sshd_config > /dev/null
+                echo "$key $value" | sudo tee -a /etc/ssh/sshd_config > /dev/null
+                check_error "追加 $key 时出错"
             fi
-            check_error "设置 $key 时出错"
         done
     fi
 
     if [ -d "/etc/ssh/sshd_config.d" ]; then
         for conf_file in /etc/ssh/sshd_config.d/*.conf; do
             if [ -f "$conf_file" ] && [ "$conf_file" != "/etc/ssh/sshd_config.d/root-login.conf" ]; then
-                for key in PermitRootLogin PasswordAuthentication PubkeyAuthentication ChallengeResponseAuthentication AuthenticationMethods; do
+                for key in PermitRootLogin PasswordAuthentication PubkeyAuthentication ChallengeResponseAuthentication; do
                     if grep -q "^$key" "$conf_file"; then
                         sudo sed -i "s/^$key/# $key/" "$conf_file"
-                        check_error "注释 $key 于 $conf_file 时出错"
+                        check_error "处理其他配置文件中的 $key 时出错"
                     fi
                 done
             fi
@@ -67,7 +69,7 @@ modify_sshd_config() {
     fi
 }
 
-# 函数：检查 SSH 服务状态
+# 检查 SSH 服务是否可用并启动
 check_ssh_service() {
     if command -v systemctl &> /dev/null; then
         if ! systemctl is-active --quiet ssh.service && ! systemctl is-active --quiet sshd.service; then
@@ -77,7 +79,7 @@ check_ssh_service() {
             elif systemctl list-unit-files | grep -q sshd.service; then
                 sudo systemctl start sshd.service
             else
-                echo "未找到 SSH 服务，尝试安装"
+                echo "未找到 SSH 服务，安装 openssh-server"
                 sudo apt update && sudo apt install -y openssh-server
                 check_error "安装 openssh-server 时出错"
             fi
@@ -90,7 +92,7 @@ check_ssh_service() {
             elif service --status-all 2>&1 | grep -q " sshd"; then
                 sudo service sshd start
             else
-                echo "未找到 SSH 服务，尝试安装"
+                echo "未找到 SSH 服务，安装 openssh-server"
                 sudo apt update && sudo apt install -y openssh-server
                 check_error "安装 openssh-server 时出错"
             fi
@@ -98,9 +100,10 @@ check_ssh_service() {
     fi
 }
 
-# 函数：重启 SSH 服务
+# 重启 SSH 服务
 restart_ssh_service() {
     check_ssh_service
+
     if command -v systemctl &> /dev/null; then
         if systemctl list-unit-files | grep -q ssh.service; then
             sudo systemctl restart ssh.service
@@ -118,13 +121,13 @@ restart_ssh_service() {
 
     if command -v systemctl &> /dev/null; then
         if systemctl is-active --quiet ssh.service || systemctl is-active --quiet sshd.service; then
-            echo "SSH 服务已成功重启"
+            echo "服务已成功重启"
         else
             echo "警告: SSH 服务可能未正确启动，请手动检查"
         fi
     else
         if service ssh status &> /dev/null || service sshd status &> /dev/null; then
-            echo "SSH 服务已成功重启"
+            echo "服务已成功重启"
         else
             echo "警告: SSH 服务可能未正确启动，请手动检查"
         fi
@@ -136,14 +139,14 @@ main() {
     check_root
 
     if ! command -v sshd &> /dev/null; then
-        echo "未检测到 SSH 服务，尝试安装"
+        echo "安装 SSH 服务器"
         apt update && apt install -y openssh-server
-        check_error "安装 SSH 服务时出错"
+        check_error "安装 SSH 服务器时出错"
     fi
 
     echo "请选择密码选项："
     echo "1. 生成密码"
-    echo "2. 输入密码"
+    echo "2. 输入密码"   
     read -p "请输入选项编号：" option
 
     case $option in
@@ -172,7 +175,9 @@ main() {
 
     modify_sshd_config
     restart_ssh_service
-    echo "✅ root 密码设置为：$password"
+
+    echo "✅ 密码设置成功: $password"
+    echo "✅ SSH 已启用 root 密码登录，并禁用密钥登录"
 }
 
 # 执行主函数
